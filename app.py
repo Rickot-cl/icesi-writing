@@ -13,17 +13,26 @@ try:
 except Exception as e:
     st.error(f"Error de configuración/conexión: {e}")
 
+# --- INICIALIZACIÓN
 if 'spark' not in st.session_state:
     try:
         st.session_state.spark = SparkSession.builder \
             .appName("IcesiWritingLabAnalytics") \
             .master("spark://spark-master:7077") \
             .config("spark.sql.execution.arrow.pyspark.enabled", "true") \
+            .config("spark.executor.memory", "512m") \
             .getOrCreate()
+        st.session_state.spark_disponible = True
     except Exception as e:
-        st.error(f"Error de infraestructura: No se pudo conectar al clúster de Spark: {e}")
+        # En la nube fallará por falta de Java, así que activamos el fallback de manera segura
+        st.session_state.spark = None
+        st.session_state.spark_disponible = False
 
 spark = st.session_state.get('spark', None)
+spark_disponible = st.session_state.get('spark_disponible', False)
+
+if not spark_disponible:
+    st.info("Modo de procesamiento estándar activado.")
 
 # CRONOGRAMA DE INVESTIGACIÓN
 st.sidebar.title("Research Timeline")
@@ -104,8 +113,8 @@ if role == "Student":
                     draft_word_count = 0
                     reflection_word_count = 0
 
-                    # Procesamiento con Apache Spark distribuido
-                    if spark:
+                    # Validación de motor de procesamiento
+                    if spark_disponible and spark is not None:
                         with st.spinner("Processing metadata using Apache Spark..."):
                             # 1. Creamos el DataFrame en el clúster
                             data_spark = [(draft.strip(), reflection.strip())]
@@ -121,10 +130,12 @@ if role == "Student":
                             # Extraemos transformando explícitamente a tipo int nativo de Python
                             draft_word_count = int(analytics_df[0]["draft_words"])
                             reflection_word_count = int(analytics_df[0]["reflection_words"])
+                            metodo_calculo = "Spark"
                     else:
-                        # Fallback seguro en caso de que Spark no esté inicializado
+                        # Fallback seguro ejecutado localmente
                         draft_word_count = len(draft.split())
                         reflection_word_count = len(reflection.split())
+                        metodo_calculo = "Python Standard"
 
                     # 3. Guardado tradicional en Google Sheets
                     existing = conn.read(worksheet="Sheet1", ttl=0)
@@ -144,12 +155,12 @@ if role == "Student":
                     updated = pd.concat([existing, new_row], ignore_index=True)
                     conn.update(worksheet="Sheet1", data=updated)
 
-                    st.success(f"🎉 Synced! Data saved. Spark verified {draft_word_count} words in draft and {reflection_word_count} in reflection.")
+                    st.success(f"🎉 Synced! Data saved. Verified {draft_word_count} words in draft and {reflection_word_count} in reflection (Engine: {metodo_calculo}).")
                     st.session_state.ai_response = "" 
                     st.rerun()
                     
                 except Exception as e:
-                    st.error(f"Sync/Spark Error: {e}. Check container logs or cloud sheet permissions.")
+                    st.error(f"Sync Error: {e}. Check container logs or cloud sheet permissions.")
             else:
                 st.warning("Please fill in your ID and the reflection field.")
 
